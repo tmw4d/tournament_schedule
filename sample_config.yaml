@@ -1,0 +1,25 @@
+tournament_name: "Chesapeake Bay Regional Cup 2026"
+tagline: "Three divisions. 50 teams. One epic weekend of competition."
+description: |
+  Welcome to the official home of the Chesapeake Bay Regional Cup! This weekend, teams from 
+  across the region converge across multiple local venues for intense pool play followed by 
+  high-stakes playoff brackets. Check your division schedule, track live standings, and 
+  coordinate your game times right here.
+contact:
+  director_name: "Tournament Operations"
+  email: "support@chesapeaketourney.com"
+  phone: "(555) 019-2834"
+locations:
+  - name: "Tilghman Community Park Fields"
+    address: "5474 Tilghman Island Rd, Tilghman, MD"
+    map_link: "https://maps.google.com/?q=Tilghman+Island+MD"
+  - name: "St. Michaels Athletic Complex"
+    address: "200 Seymour Ave, St. Michaels, MD"
+    map_link: "https://maps.google.com/?q=St+Michaels+MD"
+divisions:
+  - name: "Division A (Competitive Open)"
+    key: "div_a"
+  - name: "Division B (Intermediate)"
+    key: "div_b"
+  - name: "Division C (Recreational)"
+    key: "div_c"

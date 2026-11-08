@@ -1,0 +1,41 @@
+tournament_name: "YULA Invite 2026"
+tagline: "Three divisions. 50 teams. One epic weekend of competition."
+description: |
+  Welcome to the official home of the YULA Invite! Teams from across the region 
+  converge across multiple local venues for intense pool play followed by 
+  high-stakes playoff brackets, where the winner gains an automatic bid to High School Nationals. 
+  Check your division schedule, track live standings, and 
+  coordinate your game times right here.
+contact:
+  director_name: "Austin Bartenstein"
+  email: "invite@yula-ulti.org"
+  phone: "(555) tbd-01234"
+locations:
+  - name: "Long Bridge Park"
+    address: "475 Long Bridge Dr, Arlington, VA 22202"
+    map_link: "https://maps.app.goo.gl/B5hNBfyufQqmhKzU6"
+  - name: "Williamsburg Middle School Fields"
+    address: "5241 36th St N, Arlington, VA 22207"
+    map_link: "https://maps.app.goo.gl/CAYZUF64JdhFDavZA"
+  - name: "Wakefield High School Fields"
+    address: "1325 S Dinwiddie St, Arlington, VA 22206"
+    map_link: "https://maps.app.goo.gl/LGUFrVYvRob2WYWU8"
+  - name: "Washington Liberty High School Fields"
+    address: "1301 N Stafford St, Arlington, VA 22201"
+    map_link: "https://maps.app.goo.gl/ASgn9EoaVe2F57WM6"
+  - name: "Greenbrier Park Fields"
+    address: "2700 N Greenbrier St, Arlington, VA 22207"
+    map_link: "https://maps.app.goo.gl/g4R8RvHJQNjXaWuD6"
+  - name: "Gunston Middle School Fields"
+    address: "2700 S Lang St, Arlington, VA 22206"
+    map_link: "https://maps.app.goo.gl/roGnZsNRHyt25wcx7"
+  - name: "Episcopal High School"
+    address: "4200 W Braddock Rd, Alexandria, VA 22304"
+    map_link: "https://maps.app.goo.gl/fTxNoaVRnvXsoU5y8"
+divisions:
+  - name: "Open"
+    key: "div_a"
+  - name: "Developmental"
+    key: "div_b"
+  - name: "Girl Matching"
+    key: "div_c"
