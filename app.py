@@ -1,140 +1,144 @@
+from pathlib import Path
+
 import streamlit as st
 import yaml
-from pathlib import Path
-import sqlite3
 
-# --- Page Configuration ---
+import preferences
+import database
+import tournament_auth
+
+
 st.set_page_config(
     page_title="Tournament Tracker",
     page_icon="🏆",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# --- Load Configuration ---
+
 @st.cache_data
 def load_config():
     config_path = Path("config.yaml")
     if config_path.exists():
-        with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+        with config_path.open("r", encoding="utf-8") as config_file:
+            return yaml.safe_load(config_file) or {}
     return {
-        "tournament_name": "Default Tournament",
+        "tournament_name": "Tournament Tracker",
         "tagline": "Configure config.yaml to customize this app.",
         "description": "Please add a config.yaml file.",
-        "contact": {"director_name": "Organizer", "email": "admin@example.com", "phone": "555-0199"},
+        "contact": {},
         "locations": [],
-        "divisions": []
+        "divisions": [],
     }
+
 
 config = load_config()
+database.init_db()
+divisions = config.get("divisions", [])
+tournament_auth.resolve_optional_auth()
 
-# --- Custom Styling ---
-st.markdown("""
-    <style>
-    .card {
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        background-color: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        margin-bottom: 1rem;
-    }
-    </style>
-""", unsafe_allow_html=True)
 
-import streamlit as st
+def render_home():
+    st.title(config.get("tournament_name", "Tournament Tracker"))
+    st.markdown(f"### {config.get('tagline', '')}")
+    st.markdown(config.get("description", ""))
 
-# --- Sidebar login portal ---
-st.sidebar.header("🔐 User Portal")
+    favorite_division = st.session_state.get("favorite_division")
+    favorite_team = st.session_state.get("favorite_team")
+    if favorite_division or favorite_team:
+        with st.container(border=True):
+            st.subheader("Your favorites")
+            if favorite_division:
+                st.write(f"Division: **{favorite_division}**")
+            if favorite_team:
+                st.write(f"Team: **{favorite_team['name']}**")
 
-ADMIN_PIN = "9999"
+    st.divider()
+    left, right = st.columns(2, gap="large")
 
-with st.sidebar.expander("🔑 Log In / Enter PIN", expanded=not st.session_state.get("authenticated", False)):
-    with st.form("login_form"):
-        entered_pin = st.text_input("Enter PIN", type="password", max_chars=4)
-        submit_login = st.form_submit_button("Verify")
+    with left:
+        st.subheader("Division schedules")
+        st.write("Choose a division to see its schedule and standings.")
+        for division in divisions:
+            page_path = f"app_pages/{division['key']}.py"
+            if Path(page_path).exists():
+                st.page_link(
+                    page_path,
+                    label=f"{division['name']} schedule and standings",
+                    icon=":material/calendar_month:",
+                )
 
-    if submit_login:
-        if entered_pin == ADMIN_PIN:
-            st.session_state["authenticated"] = True
-            st.session_state["user_role"] = "Admin"
-            st.success("Logged in as Admin!")
-            st.rerun()
-        elif len(entered_pin) == 4:
-            # Quick check against SQLite teams table
-            import sqlite3
-            conn = sqlite3.connect("tournament.db")
-            cursor = conn.cursor()
-            cursor.execute("SELECT team_id, name FROM teams WHERE access_pin = ?", (entered_pin,))
-            team = cursor.fetchone()
-            conn.close()
-            
-            if team:
-                st.session_state["authenticated"] = True
-                st.session_state["user_role"] = "Team"
-                st.session_state["team_id"] = team[0]
-                st.session_state["team_name"] = team[1]
-                st.success(f"Logged in: {team[1]}")
-                st.rerun()
-            else:
-                st.error("Invalid PIN.")
-        else:
-            st.error("Enter a valid 4-digit PIN.")
+        if tournament_auth.is_admin():
+            st.divider()
+            st.subheader("Admin tools")
+            st.write("Manage divisions, teams, venues, schedules, and scores.")
+            st.page_link(
+                "app_pages/admin-portal.py",
+                label="Open admin data manager",
+                icon=":material/admin_panel_settings:",
+            )
 
-if st.session_state.get("authenticated", False):
-    role = st.session_state.get("user_role")
-    if role == "Admin":
-        st.sidebar.info("🛠️ Role: Administrator")
-    else:
-        st.sidebar.info(f"🛡️ Role: {st.session_state.get('team_name')}")
-        
-    if st.sidebar.button("Log Out"):
-        st.session_state.clear()
-        st.rerun()
+    with right:
+        st.subheader("Tournament venues")
+        for location in config.get("locations", []):
+            with st.container(border=True):
+                st.markdown(f"**{location['name']}**")
+                st.write(location.get("address", ""))
+                if location.get("map_link"):
+                    st.link_button("Open in Google Maps", location["map_link"])
 
-st.sidebar.markdown("---")
+    st.divider()
+    contact = config.get("contact", {})
+    st.subheader("Contact and support")
+    st.markdown(
+        "Need assistance on-site? Reach out to tournament administration:\n"
+        f"\n- **Director / HQ:** {contact.get('director_name', '')}"
+        f"\n- **Email:** {contact.get('email', '')}"
+        f"\n- **Phone:** {contact.get('phone', '')}"
+    )
 
-# --- Main Landing Page Content ---
-st.title(config.get("tournament_name", "Tournament Tracker"))
-st.markdown(f"### {config.get('tagline', '')}")
-st.markdown(config.get("description", ""))
 
-st.markdown("---")
+page_by_key = {
+    "div_a": "app_pages/div_a.py",
+    "div_b": "app_pages/div_b.py",
+    "div_c": "app_pages/div_c.py",
+}
+pages = [
+    st.Page(
+        render_home,
+        title="Home",
+        icon=":material/home:",
+        help="Tournament overview, division schedules, venues, and contact details.",
+        url_path="home",
+        default=True,
+    )
+]
 
-# Layout columns for Divisions & Locations
-col1, col2 = st.columns(2, gap="large")
+for division in divisions:
+    page_path = page_by_key.get(division.get("key"))
+    if page_path and Path(page_path).exists():
+        pages.append(
+            st.Page(
+                page_path,
+                title=division["name"],
+                icon=":material/sports:",
+                help=f"View the {division['name']} schedule and pool standings.",
+                url_path=division["key"],
+            )
+        )
 
-with col1:
-    st.markdown("### 🏆 Division Schedules")
-    st.markdown("Select a division below to view matchups, game times, field locations, and live pool standings:")
-    
-    for div in config.get("divisions", []):
-        # Using Streamlit query params or radio/tabs for navigation in multi-page setups
-        if st.button(f"📅 View {div['name']} Schedule & Standings", use_container_width=True):
-            st.session_state["selected_division"] = div["key"]
-            st.info(f"Navigating to {div['name']}... (Link this to your division page router)")
+if tournament_auth.is_admin():
+    pages.append(
+        st.Page(
+            "app_pages/admin-portal.py",
+            title="Admin",
+            icon=":material/admin_panel_settings:",
+            help="Administrator tools for tournament data.",
+            url_path="admin",
+        )
+    )
 
-with col2:
-    st.markdown("### 📍 Tournament Venues & Locations")
-    st.markdown("All matches are distributed across our primary host facilities:")
-    
-    for loc in config.get("locations", []):
-        st.markdown(f"""
-        <div class="card">
-            <strong>{loc['name']}</strong><br>
-            📍 {loc['address']}<br>
-            <a href="{loc['map_link']}" target="_blank">Open in Google Maps ↗</a>
-        </div>
-        """, unsafe_allow_html=True)
-
-st.markdown("---")
-
-# Contact Footer
-st.markdown("### 📞 Contact & Support")
-contact = config.get("contact", {})
-st.markdown(f"""
-Need assistance on-site? Reach out to tournament administration:
-* **Director / HQ:** {contact.get('director_name')}
-* **Email:** {contact.get('email')}
-* **Phone:** {contact.get('phone')}
-""")
+navigation = st.navigation(pages, position="sidebar")
+tournament_auth.render_account_sidebar()
+preferences.render_favorite_controls(divisions)
+navigation.run()
