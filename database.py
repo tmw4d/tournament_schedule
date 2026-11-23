@@ -11,6 +11,7 @@ DERIVED_MODEL_MIGRATION_PATH = BASE_DIR / "migrations" / "003_derived_game_and_p
 POOL_SLOTS_MIGRATION_PATH = BASE_DIR / "migrations" / "004_pool_slots_and_tournaments.sql"
 VENUE_FIELDS_MIGRATION_PATH = BASE_DIR / "migrations" / "005_venue_fields.sql"
 TEAM_PAYMENT_MIGRATION_PATH = BASE_DIR / "migrations" / "006_team_location_and_payment.sql"
+DIVISION_SCHEDULE_MIGRATION_PATH = BASE_DIR / "migrations" / "007_division_schedule_metadata.sql"
 
 
 def init_db():
@@ -44,6 +45,20 @@ def init_db():
         team_columns = {row[1] for row in conn.execute("PRAGMA table_info(teams)")}
         if "payment_received_date" not in team_columns:
             conn.executescript(TEAM_PAYMENT_MIGRATION_PATH.read_text(encoding="utf-8"))
+
+        division_columns = {row[1] for row in conn.execute("PRAGMA table_info(divisions)")}
+        division_schedule_columns = {
+            "description", "pool_game_length_minutes", "playoff_game_length_minutes"
+        }
+        if not division_schedule_columns.issubset(division_columns):
+            migration_sql = DIVISION_SCHEDULE_MIGRATION_PATH.read_text(encoding="utf-8")
+            for statement in migration_sql.split(";"):
+                statement = statement.strip()
+                if statement:
+                    column = statement.split("ADD COLUMN", 1)[1].split()[0]
+                    if column not in division_columns:
+                        conn.execute(statement)
+                        division_columns.add(column)
 
         team_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(teams)").fetchall()

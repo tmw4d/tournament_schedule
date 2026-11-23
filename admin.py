@@ -63,9 +63,14 @@ def _editor(conn, table, key, order, label, columns=None):
 
 def _render_divisions(conn):
     st.subheader("Divisions")
-    divisions = conn.execute("SELECT division_id,name,tournament FROM divisions ORDER BY name").fetchall()
+    divisions = conn.execute("""SELECT division_id,name,tournament,description,
+        pool_game_length_minutes,playoff_game_length_minutes
+        FROM divisions ORDER BY name""").fetchall()
     st.dataframe(
-        pd.DataFrame([{"Division": row[1], "Tournament": row[2]} for row in divisions]),
+        pd.DataFrame([{
+            "Division": row[1], "Tournament": row[2], "Description": row[3],
+            "Pool length (min)": row[4], "Playoff length (min)": row[5],
+        } for row in divisions]),
         hide_index=True,
         width="stretch",
         alt="Tournament divisions",
@@ -74,17 +79,28 @@ def _render_divisions(conn):
     with st.form("new_division"):
         name = st.text_input("Division name")
         tournament = st.text_input("Tournament", value="Tournament")
+        description = st.text_area("Division description")
+        st.caption("Set a duration to 0 to leave it unset.")
+        pool_length = st.number_input("Pool game length (minutes)", min_value=0, max_value=240, value=0, step=1)
+        playoff_length = st.number_input("Playoff game length (minutes)", min_value=0, max_value=240, value=0, step=1)
         add = st.form_submit_button("Add division", type="primary")
     if add and name.strip():
         try:
-            conn.execute("INSERT INTO divisions(name,tournament) VALUES (?,?)", (name.strip(), tournament.strip()))
+            conn.execute("""INSERT INTO divisions
+                (name,tournament,description,pool_game_length_minutes,playoff_game_length_minutes)
+                VALUES (?,?,?,?,?)""", (
+                    name.strip(), tournament.strip(), description.strip() or None,
+                    pool_length or None, playoff_length or None,
+                ))
             conn.commit()
             st.success("Division added.")
             st.rerun()
         except sqlite3.Error as error:
             st.error(f"Could not add division: {error}")
 
-    divisions = conn.execute("SELECT division_id,name,tournament FROM divisions ORDER BY name").fetchall()
+    divisions = conn.execute("""SELECT division_id,name,tournament,description,
+        pool_game_length_minutes,playoff_game_length_minutes
+        FROM divisions ORDER BY name""").fetchall()
     if not divisions:
         st.info("Add a division to begin.")
         return
@@ -94,10 +110,24 @@ def _render_divisions(conn):
     with st.form("edit_division"):
         new_name = st.text_input("Division name", value=current[1])
         new_tournament = st.text_input("Tournament", value=current[2])
+        new_description = st.text_area("Division description", value=current[3] or "")
+        st.caption("Set a duration to 0 to leave it unset.")
+        new_pool_length = st.number_input(
+            "Pool game length (minutes)", min_value=0, max_value=240,
+            value=current[4] or 0, step=1,
+        )
+        new_playoff_length = st.number_input(
+            "Playoff game length (minutes)", min_value=0, max_value=240,
+            value=current[5] or 0, step=1,
+        )
         save = st.form_submit_button("Save division")
     if save:
         try:
-            conn.execute("UPDATE divisions SET name=?,tournament=? WHERE division_id=?", (new_name.strip(), new_tournament.strip(), selected))
+            conn.execute("""UPDATE divisions SET name=?,tournament=?,description=?,
+                pool_game_length_minutes=?,playoff_game_length_minutes=? WHERE division_id=?""", (
+                    new_name.strip(), new_tournament.strip(), new_description.strip() or None,
+                    new_pool_length or None, new_playoff_length or None, selected,
+                ))
             conn.commit()
             st.success("Division updated.")
             st.rerun()
@@ -312,6 +342,9 @@ def _render_games(conn, division_labels, field_labels):
         st.info("Create a division before entering games.")
         return
     division_id = st.selectbox("Division", list(division_labels), format_func=division_labels.get, key="games_division")
+    saved_message_key = f"games_saved_message_{division_id}"
+    if st.session_state.pop(saved_message_key, False):
+        st.success("Games saved and verified in the database.")
     frame = pd.read_sql_query("SELECT * FROM games WHERE division_id=? ORDER BY game_code", conn, params=(division_id,))
     source_labels = {
         "unresolved": "TBD",
@@ -360,6 +393,7 @@ def _render_games(conn, division_labels, field_labels):
     config = {
         "game_id": None,
         "division_id": None,
+        "game_code": st.column_config.TextColumn("Game", pinned=True, required=True),
         "pool_id": st.column_config.SelectboxColumn("Pool context", options=["—",*pool_labels.values()]),
         "field_id": st.column_config.SelectboxColumn("Venue · Field", options=["—",*field_to_label.values()]),
         "stage": st.column_config.SelectboxColumn("Stage", options=["Pool","Playoff"]),
@@ -381,26 +415,94 @@ def _render_games(conn, division_labels, field_labels):
     }
     if "venue_id" in frame.columns:
         config["venue_id"] = None
-    edited = st.data_editor(frame, key=f"games_editor_{division_id}", num_rows="dynamic", width="stretch", hide_index=True,
+    edited = st.data_editor(frame, key=f"games_editor_{division_id}", num_rows="dynamic", height=650, width="stretch", hide_index=True,
         column_config=config, alt=f"Games in {division_labels[division_id]}")
     if st.button("Save games", key=f"save_games_{division_id}", type="primary"):
-        changes=st.session_state[f"games_editor_{division_id}"]
         try:
             with conn:
-                for idx,updates in changes.get("edited_rows",{}).items():
-                    game_id=frame.iloc[int(idx)]["game_id"]
-                    values=[label_to_id[column].get(value) if column in label_to_id else (source_values.get(value,value) if column in ("source_type_a","source_type_b") else (None if column.startswith("source_outcome_") and value=="—" else value)) for column,value in updates.items()]
-                    assignments=", ".join(f"{column}=?" for column in updates)
-                    conn.execute(f"UPDATE games SET {assignments} WHERE game_id=? AND division_id=?",[*values,game_id,division_id])
-                for idx in changes.get("deleted_rows",[]):
-                    conn.execute("DELETE FROM games WHERE game_id=? AND division_id=?",(frame.iloc[int(idx)]["game_id"],division_id))
-                for row in changes.get("added_rows",[]):
-                    values={k:(label_to_id[k].get(v) if k in label_to_id else (source_values.get(v,v) if k in ("source_type_a","source_type_b") else (None if k.startswith("source_outcome_") and v=="—" else v))) for k,v in row.items() if k not in ("game_id","division_id") and not pd.isna(v)}
-                    if values.get("game_code") and values.get("stage"):
-                        values["division_id"]=division_id
-                        cols=", ".join(values)
-                        conn.execute(f"INSERT INTO games ({cols}) VALUES ({','.join('?' for _ in values)})",list(values.values()))
-            st.success("Games saved.")
+                def database_value(column, value):
+                    if pd.isna(value):
+                        return None
+                    if column in label_to_id:
+                        return label_to_id[column].get(value)
+                    if column in ("source_type_a", "source_type_b"):
+                        return source_values.get(value, value)
+                    if column.startswith("source_outcome_") and value == "—":
+                        return None
+                    return value
+
+                def same_value(left, right):
+                    left = database_value("", left)
+                    right = database_value("", right)
+                    if left is None or right is None:
+                        return left is None and right is None
+                    return left == right
+
+                # Persist the editor's returned table by stable game_id rather than
+                # relying on edited_rows indexes, which can shift with row changes.
+                original_ids = set(frame["game_id"].dropna().astype(int))
+                returned_ids = set()
+                for _, row in edited.iterrows():
+                    game_id = row.get("game_id")
+                    is_existing = pd.notna(game_id)
+                    if is_existing:
+                        game_id = int(game_id)
+                        returned_ids.add(game_id)
+                        original = frame.loc[frame["game_id"] == game_id].iloc[0]
+                        values = {
+                            column: database_value(column, value)
+                            for column, value in row.items()
+                            if column not in ("game_id", "division_id")
+                            and not same_value(value, original[column])
+                        }
+                        if values:
+                            assignments = ", ".join(f"{column}=?" for column in values)
+                            try:
+                                cursor = conn.execute(
+                                    f"UPDATE games SET {assignments} WHERE game_id=? AND division_id=?",
+                                    [*values.values(), game_id, division_id],
+                                )
+                            except sqlite3.IntegrityError as error:
+                                raise sqlite3.IntegrityError(
+                                    f"{row['game_code']} ({', '.join(values)}): {error}"
+                                ) from error
+                            if cursor.rowcount != 1:
+                                raise sqlite3.IntegrityError(f"Game {game_id} was not saved.")
+                    else:
+                        values = {
+                            column: database_value(column, value)
+                            for column, value in row.items()
+                            if column not in ("game_id", "division_id")
+                        }
+                    if not is_existing and values.get("game_code") and values.get("stage"):
+                        values["division_id"] = division_id
+                        columns = ", ".join(values)
+                        conn.execute(
+                            f"INSERT INTO games ({columns}) VALUES ({','.join('?' for _ in values)})",
+                            list(values.values()),
+                        )
+
+                for game_id in original_ids - returned_ids:
+                    conn.execute("DELETE FROM games WHERE game_id=? AND division_id=?", (game_id, division_id))
+
+                # Verify persisted values inside the same transaction before success.
+                for _, row in edited.iterrows():
+                    game_id = row.get("game_id")
+                    if pd.isna(game_id):
+                        continue
+                    expected = (
+                        database_value("source_type_a", row["source_type_a"]),
+                        database_value("source_pool_a_id", row["source_pool_a_id"]),
+                        database_value("source_rank_a", row["source_rank_a"]),
+                    )
+                    saved = conn.execute(
+                        "SELECT source_type_a,source_pool_a_id,source_rank_a "
+                        "FROM games WHERE game_id=? AND division_id=?",
+                        (int(game_id), division_id),
+                    ).fetchone()
+                    if saved is None or tuple(saved) != expected:
+                        raise sqlite3.IntegrityError(f"Game {int(game_id)} changes were not persisted.")
+            st.session_state[saved_message_key] = True
             st.rerun()
         except (sqlite3.Error, ValueError) as error:
             st.error(f"Could not save games: {error}")
@@ -441,13 +543,24 @@ def render_admin_dashboard():
                 _delete_button(conn,"venue",delete_venue,"DELETE FROM venues WHERE venue_id=?",(delete_venue,),"delete_venue")
             _render_venue_fields(conn, venue_labels)
         with tabs[6]:
-            st.subheader("Calculated pool standings")
-            st.dataframe(pd.read_sql_query("""SELECT p.name AS pool,v.position,v.team_name AS team,
+            st.subheader("Calculated views")
+            if not division_labels:
+                st.info("Create a division to view calculated standings and games.")
+            else:
+                calculated_division = st.selectbox(
+                    "Division",
+                    list(division_labels),
+                    format_func=division_labels.get,
+                    key="calculated_views_division",
+                )
+                st.subheader("Calculated pool standings")
+                st.dataframe(pd.read_sql_query("""SELECT p.name AS pool,v.position,v.team_name AS team,
                 v.wins,v.losses,v.goals_for,v.goals_against,v.goal_differential,v.final_rank
                 FROM pool_members_vw v JOIN pools p ON p.pool_id=v.pool_id
-                ORDER BY p.name,v.final_rank,v.position""", conn), hide_index=True, width="stretch", alt="Calculated pool standings")
-            st.subheader("Resolved games")
-            st.dataframe(pd.read_sql_query("""SELECT g.game_code,d.name AS division,
+                WHERE p.division_id=?
+                ORDER BY p.name,v.final_rank,v.position""", conn, params=(calculated_division,)), hide_index=True, width="stretch", alt=f"Calculated pool standings for {division_labels[calculated_division]}")
+                st.subheader("Resolved games")
+                st.dataframe(pd.read_sql_query("""SELECT g.game_code,d.name AS division,
                 a.name AS team_a,g.score_a,b.name AS team_b,g.score_b,
                 w.name AS winner,l.name AS loser
                 FROM games_vw g JOIN divisions d ON d.division_id=g.division_id
@@ -455,4 +568,5 @@ def render_admin_dashboard():
                 LEFT JOIN teams b ON b.team_id=g.team_b_id
                 LEFT JOIN teams w ON w.team_id=g.winner_team_id
                 LEFT JOIN teams l ON l.team_id=g.loser_team_id
-                ORDER BY d.name,g.game_code""", conn), hide_index=True, width="stretch", alt="Resolved teams and game outcomes")
+                WHERE g.division_id=?
+                ORDER BY d.name,g.game_code""", conn, params=(calculated_division,)), hide_index=True, width="stretch", alt=f"Resolved games for {division_labels[calculated_division]}")

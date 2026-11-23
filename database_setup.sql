@@ -5,7 +5,10 @@ DROP VIEW IF EXISTS pool_members_vw;
 CREATE TABLE IF NOT EXISTS divisions (
     division_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    tournament TEXT NOT NULL DEFAULT 'Tournament'
+    tournament TEXT NOT NULL DEFAULT 'Tournament',
+    description TEXT,
+    pool_game_length_minutes INTEGER CHECK (pool_game_length_minutes IS NULL OR pool_game_length_minutes > 0),
+    playoff_game_length_minutes INTEGER CHECK (playoff_game_length_minutes IS NULL OR playoff_game_length_minutes > 0)
 );
 
 CREATE TABLE IF NOT EXISTS venues (
