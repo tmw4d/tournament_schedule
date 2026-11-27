@@ -60,9 +60,13 @@ erDiagram
 ### Calculated views
 
 `pool_members_vw` adds wins, losses, goals for, goals against, goal
-differential, and `final_rank` to pool assignments. The current rank ordering
-uses wins, then goal differential, then goals for. Games count toward standings
-when they are Final, are marked as Pool stage, and have a fixed-team source.
+differential, and `final_rank` to pool assignments. `final_rank` uses `ROW_NUMBER`
+ordered by wins descending, losses ascending, goal differential descending, and
+pool entry position ascending, so each assigned team receives a unique place.
+Ranks are populated independently for each pool only after that pool has at
+least one Pool-stage game and every such game is Final with both scores entered.
+An unfinished game in Pool A does not prevent Pool B from being ranked. Games
+count toward standings when they are Final, are marked as Pool stage, and have a fixed-team source.
 If those criteria or later tie-break rules change, update the view definition;
 do not hand-enter these statistics.
 
@@ -85,10 +89,16 @@ tab filters the spreadsheet editor to one selected division at a time. Related
 records are selected by readable names and codes;
 database IDs are internal keys and are hidden from routine entry screens.
 
+Administrators also have a separate **Score entry** page. It filters games by
+division, status, and stage, then presents scores and status in a chronological
+editable worksheet. Shared top navigation links back to Home and between
+division pages; favorite-team games receive a highlighted row on the schedule.
+
 ## Current limits and rules to confirm
 
-- Pool ranking currently orders by wins, goal differential, and goals for.
-  Head-to-head and other tie-breakers are not implemented.
+- Pool ranking orders by wins descending, losses ascending, goal differential
+  descending, and entry position ascending. Head-to-head and other tie-breakers
+  are not implemented.
 - Only final Pool-stage games with fixed team sources contribute to pool stats.
 - A tied final game has no winner/loser; add an explicit advancement rule or
   tie-break score field if the tournament permits ties in elimination games.
@@ -114,6 +124,7 @@ support multiple fields.
 - `app.py`: public navigation and administrator-only page registration.
 - `app_pages/`: home and division pages.
 - `admin.py`: entered-table editors and calculated-view inspection.
+- `app_pages/scores.py`: division-filtered bulk score and status entry.
 - `division_view.py`: public schedule and standings pages.
 - `database.py`: schema initialization and migrations.
 - `database_setup.sql`: entered tables and calculated SQL views.

@@ -3,6 +3,7 @@ import sqlite3
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 import database
 
@@ -511,11 +512,165 @@ def _render_games(conn, division_labels, field_labels):
         _delete_button(conn,"game",delete_game,"DELETE FROM games WHERE game_id=? AND division_id=?",(delete_game,division_id),f"delete_game_{division_id}")
 
 
+def _overlap_pairs(interval_rows, group_key, group_label):
+    conflicts = []
+    grouped = {}
+    for row in interval_rows:
+        value = row.get(group_key)
+        if value is not None and pd.notna(value):
+            grouped.setdefault(value, []).append(row)
+    for group_id, rows in grouped.items():
+        rows.sort(key=lambda row: row["start"])
+        for left_index, left in enumerate(rows):
+            for right in rows[left_index + 1:]:
+                if right["start"] >= left["end"]:
+                    break
+                if left["game_id"] == right["game_id"]:
+                    continue
+                overlap_start = max(left["start"], right["start"])
+                overlap_end = min(left["end"], right["end"])
+                if overlap_start < overlap_end:
+                    conflicts.append({
+                        group_label: left.get(group_label, group_id),
+                        "Game 1": left["game_code"],
+                        "Division 1": left["division"],
+                        "Game 1 start": left["start"],
+                        "Game 1 end": left["end"],
+                        "Game 2": right["game_code"],
+                        "Division 2": right["division"],
+                        "Game 2 start": right["start"],
+                        "Game 2 end": right["end"],
+                        "Overlap (minutes)": int((overlap_end - overlap_start).total_seconds() // 60),
+                        "game_id_1": left["game_id"],
+                        "game_id_2": right["game_id"],
+                    })
+    return conflicts
+
+
+def _render_schedule_checks(conn):
+    st.subheader("Schedule checks")
+    st.caption("Overlap checks use each game's date and start time plus its division's Pool or Playoff duration.")
+    games = pd.read_sql_query("""SELECT g.game_id,g.game_code,g.division_id,d.name AS division,
+        g.stage,g.status,g.game_time,g.field_id,v.name AS venue,f.name AS field,
+        CASE WHEN g.stage='Pool' THEN d.pool_game_length_minutes
+             WHEN g.stage='Playoff' THEN d.playoff_game_length_minutes END AS duration_minutes,
+        g.team_a_id,g.team_b_id,ta.name AS team_a,tb.name AS team_b
+        FROM games_vw g JOIN divisions d ON d.division_id=g.division_id
+        LEFT JOIN fields f ON f.field_id=g.field_id
+        LEFT JOIN venues v ON v.venue_id=f.venue_id
+        LEFT JOIN teams ta ON ta.team_id=g.team_a_id
+        LEFT JOIN teams tb ON tb.team_id=g.team_b_id
+        ORDER BY g.game_time,g.game_code""", conn)
+    if games.empty:
+        st.info("Add games to see schedule conflicts.")
+        return
+
+    games["start"] = pd.to_datetime(games["game_time"], errors="coerce")
+    games["duration_minutes"] = pd.to_numeric(games["duration_minutes"], errors="coerce")
+    games["end"] = games["start"] + pd.to_timedelta(games["duration_minutes"], unit="m")
+    valid_intervals = games[games["start"].notna() & games["end"].notna()].copy()
+    missing = games[games["start"].isna() | games["duration_minutes"].isna()].copy()
+    if not missing.empty:
+        st.warning(
+            f"{len(missing)} game(s) are missing a start date/time or a division-level duration. "
+            "They are excluded from overlap checks. Set game times under Games and durations under Divisions."
+        )
+        st.dataframe(
+            missing[["division", "game_code", "stage", "game_time", "duration_minutes"]],
+            hide_index=True, width="stretch", alt="Games missing schedule times or durations",
+        )
+
+    interval_rows = valid_intervals.to_dict("records")
+    participant_rows = []
+    for game in interval_rows:
+        for side in ("a", "b"):
+            team_id = game[f"team_{side}_id"]
+            team_name = game[f"team_{side}"]
+            if pd.notna(team_id) and pd.notna(team_name):
+                participant_rows.append({
+                    **game,
+                    "team_id": int(team_id),
+                    "team": team_name,
+                })
+    team_conflicts = _overlap_pairs(participant_rows, "team_id", "team")
+    field_rows = [
+        {
+            **game,
+            "field_id": int(game["field_id"]),
+            "Venue · Field": f"{game['venue']} · {game['field']}",
+        }
+        for game in interval_rows
+        if pd.notna(game["field_id"]) and pd.notna(game["venue"]) and pd.notna(game["field"])
+    ]
+    field_conflicts = _overlap_pairs(field_rows, "field_id", "Venue · Field")
+
+    st.subheader("Team conflicts")
+    if team_conflicts:
+        team_frame = pd.DataFrame(team_conflicts).drop(columns=["game_id_1", "game_id_2"])
+        st.error(f"Found {len(team_frame)} overlapping team schedule(s).", icon=":material/error:")
+        st.dataframe(team_frame, hide_index=True, width="stretch", alt="Games where a team is scheduled in overlapping time slots")
+    else:
+        st.success("No resolved team has overlapping games.")
+
+    st.subheader("Venue and field timeline")
+    st.caption("Each bar is the full scheduled game duration. Empty space shows available time; red bars mark field overlaps. Hover a bar for game details.")
+    if not field_rows:
+        st.info("Assign a venue and field to scheduled games to see the timeline.")
+        return
+    timeline = pd.DataFrame(field_rows)
+    timeline["date"] = timeline["start"].dt.date
+    dates = sorted(timeline["date"].dropna().unique())
+    selected_date = st.selectbox(
+        "Schedule date", dates,
+        format_func=lambda value: value.strftime("%A, %B %d, %Y").replace(" 0", " "),
+        key="schedule_timeline_date",
+    )
+    timeline = timeline[timeline["date"] == selected_date].copy()
+    field_conflict_ids = {
+        game_id for conflict in field_conflicts
+        for game_id in (conflict["game_id_1"], conflict["game_id_2"])
+    }
+    timeline["Conflict"] = timeline["game_id"].map(
+        lambda game_id: "Overlap" if game_id in field_conflict_ids else "Scheduled"
+    )
+    counts = timeline.groupby("Venue · Field")["game_id"].transform("count")
+    timeline["lane"] = timeline["Venue · Field"] + " (" + counts.astype(str) + ")"
+    tooltip = [
+        alt.Tooltip("game_code:N", title="Game"),
+        alt.Tooltip("division:N", title="Division"),
+        alt.Tooltip("stage:N", title="Stage"),
+        alt.Tooltip("team_a:N", title="Team A"),
+        alt.Tooltip("team_b:N", title="Team B"),
+        alt.Tooltip("start:T", title="Start", format="%I:%M %p"),
+        alt.Tooltip("end:T", title="End", format="%I:%M %p"),
+        alt.Tooltip("Conflict:N", title="Schedule"),
+    ]
+    chart = alt.Chart(timeline).mark_bar(size=24, opacity=0.85).encode(
+        x=alt.X("lane:N", title="Venue · Field", sort=sorted(timeline["lane"].unique()), axis=alt.Axis(labelAngle=-35)),
+        y=alt.Y(
+            "start:T", title="Local time",
+            scale=alt.Scale(domain=[timeline["start"].min(), timeline["end"].max()], reverse=True),
+            axis=alt.Axis(format="%I:%M %p"),
+        ),
+        y2=alt.Y2("end:T"),
+        color=alt.Color(
+            "Conflict:N", title="Schedule",
+            scale=alt.Scale(domain=["Scheduled", "Overlap"], range=["#4c78a8", "#d62728"]),
+        ),
+        tooltip=tooltip,
+    ).properties(height=480)
+    st.altair_chart(chart, width="stretch")
+    if field_conflicts:
+        field_frame = pd.DataFrame(field_conflicts).drop(columns=["game_id_1", "game_id_2"])
+        st.subheader("Field overlap details")
+        st.dataframe(field_frame, hide_index=True, width="stretch", alt="Games assigned to the same field at overlapping times")
+
+
 def render_admin_dashboard():
     database.init_db()
     st.title("Tournament data manager")
     st.caption("IDs remain internal. Edit tournament facts here; calculated standings and resolved game details are read-only views.")
-    tabs = st.tabs(["Divisions", "Pools", "Teams", "Pool members", "Games", "Venues", "Calculated views"])
+    tabs = st.tabs(["Divisions", "Pools", "Teams", "Pool members", "Games", "Schedule checks", "Venues", "Calculated views"])
     with closing(_connection()) as conn:
         division_rows = conn.execute("SELECT division_id,name,tournament FROM divisions ORDER BY name").fetchall()
         division_labels = {r[0]: f"{r[1]} · {r[2]}" for r in division_rows}
@@ -536,13 +691,15 @@ def render_admin_dashboard():
         with tabs[4]:
             _render_games(conn, division_labels, field_labels)
         with tabs[5]:
+            _render_schedule_checks(conn)
+        with tabs[6]:
             st.subheader("Venues")
             _editor(conn, "venues", "venue_id", "name", "venues", {"venue_id": None})
             if venue_labels:
                 delete_venue=st.selectbox("Venue to delete",list(venue_labels),format_func=venue_labels.get,key="delete_venue_choice")
                 _delete_button(conn,"venue",delete_venue,"DELETE FROM venues WHERE venue_id=?",(delete_venue,),"delete_venue")
             _render_venue_fields(conn, venue_labels)
-        with tabs[6]:
+        with tabs[7]:
             st.subheader("Calculated views")
             if not division_labels:
                 st.info("Create a division to view calculated standings and games.")

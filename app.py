@@ -71,11 +71,16 @@ def render_home():
         if tournament_auth.is_admin():
             st.divider()
             st.subheader("Admin tools")
-            st.write("Manage divisions, teams, venues, schedules, and scores.")
+            st.write("Manage tournament setup or enter game scores.")
             st.page_link(
                 "app_pages/admin-portal.py",
                 label="Open admin data manager",
                 icon=":material/admin_panel_settings:",
+            )
+            st.page_link(
+                "app_pages/scores.py",
+                label="Open score entry",
+                icon=":material/edit_note:",
             )
 
     with right:
@@ -113,6 +118,7 @@ pages = [
         default=True,
     )
 ]
+top_navigation = [(pages[0], "Home", ":material/home:")]
 
 for division in divisions:
     page_path = page_by_key.get(division.get("key"))
@@ -126,19 +132,35 @@ for division in divisions:
                 url_path=division["key"],
             )
         )
+        top_navigation.append((pages[-1], division["name"], ":material/sports:"))
 
 if tournament_auth.is_admin():
-    pages.append(
-        st.Page(
+    score_page = st.Page(
+        "app_pages/scores.py",
+        title="Score entry",
+        icon=":material/edit_note:",
+        help="Enter scores and update game status by division.",
+        url_path="scores",
+    )
+    pages.append(score_page)
+    top_navigation.append((score_page, "Score entry", ":material/edit_note:"))
+    data_page = st.Page(
             "app_pages/admin-portal.py",
             title="Admin",
             icon=":material/admin_panel_settings:",
             help="Administrator tools for tournament data.",
             url_path="admin",
-        )
     )
+    pages.append(data_page)
+    top_navigation.append((data_page, "Data manager", ":material/admin_panel_settings:"))
 
 navigation = st.navigation(pages, position="sidebar")
+with st.container():
+    nav_columns = st.columns(len(top_navigation), vertical_alignment="center")
+    for column, (page, label, icon) in zip(nav_columns, top_navigation):
+        with column:
+            st.page_link(page, label=label, icon=icon, width="stretch")
+st.divider()
 tournament_auth.render_account_sidebar()
 preferences.render_favorite_controls(divisions)
 navigation.run()

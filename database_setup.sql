@@ -106,27 +106,65 @@ CREATE TABLE IF NOT EXISTS games (
 );
 
 CREATE VIEW IF NOT EXISTS pool_members_vw AS
-WITH pool_results AS (
-    SELECT pm.pool_id, pm.team_id,
-           SUM(CASE WHEN g.status='Final' AND ((g.source_team_a_id=pm.team_id AND g.score_a>g.score_b) OR (g.source_team_b_id=pm.team_id AND g.score_b>g.score_a)) THEN 1 ELSE 0 END) wins,
-           SUM(CASE WHEN g.status='Final' AND ((g.source_team_a_id=pm.team_id AND g.score_a<g.score_b) OR (g.source_team_b_id=pm.team_id AND g.score_b<g.score_a)) THEN 1 ELSE 0 END) losses,
-           SUM(CASE WHEN g.status='Final' THEN CASE WHEN g.source_team_a_id=pm.team_id THEN g.score_a ELSE g.score_b END ELSE 0 END) goals_for,
-           SUM(CASE WHEN g.status='Final' THEN CASE WHEN g.source_team_a_id=pm.team_id THEN g.score_b ELSE g.score_a END ELSE 0 END) goals_against
+WITH pool_game_participants AS (
+    SELECT g.game_id, g.pool_id, g.stage, g.status, g.score_a, g.score_b,
+           CASE g.source_type_a
+             WHEN 'team' THEN g.source_team_a_id
+             WHEN 'pool_position' THEN (
+               SELECT pm.team_id FROM pool_members pm
+               WHERE pm.pool_id=g.source_pool_a_id AND pm.position=g.source_rank_a
+             )
+           END AS team_a_id,
+           CASE g.source_type_b
+             WHEN 'team' THEN g.source_team_b_id
+             WHEN 'pool_position' THEN (
+               SELECT pm.team_id FROM pool_members pm
+               WHERE pm.pool_id=g.source_pool_b_id AND pm.position=g.source_rank_b
+             )
+           END AS team_b_id
+    FROM games g
+    WHERE g.stage='Pool'
+), pool_results AS (
+    SELECT pm.pool_id, pm.team_id, pm.position,
+           SUM(CASE WHEN g.status='Final' AND g.score_a IS NOT NULL AND g.score_b IS NOT NULL
+                     AND ((g.team_a_id=pm.team_id AND g.score_a>g.score_b)
+                       OR (g.team_b_id=pm.team_id AND g.score_b>g.score_a))
+                    THEN 1 ELSE 0 END) wins,
+           SUM(CASE WHEN g.status='Final' AND g.score_a IS NOT NULL AND g.score_b IS NOT NULL
+                     AND ((g.team_a_id=pm.team_id AND g.score_a<g.score_b)
+                       OR (g.team_b_id=pm.team_id AND g.score_b<g.score_a))
+                    THEN 1 ELSE 0 END) losses,
+           SUM(CASE WHEN g.status='Final' AND g.score_a IS NOT NULL AND g.score_b IS NOT NULL
+                    THEN CASE WHEN g.team_a_id=pm.team_id THEN g.score_a ELSE g.score_b END
+                    ELSE 0 END) goals_for,
+           SUM(CASE WHEN g.status='Final' AND g.score_a IS NOT NULL AND g.score_b IS NOT NULL
+                    THEN CASE WHEN g.team_a_id=pm.team_id THEN g.score_b ELSE g.score_a END
+                    ELSE 0 END) goals_against
     FROM pool_members pm
-    LEFT JOIN games g ON g.pool_id=pm.pool_id AND g.stage='Pool'
-      AND ((g.source_type_a='team' AND g.source_team_a_id=pm.team_id)
-        OR (g.source_type_b='team' AND g.source_team_b_id=pm.team_id))
-    GROUP BY pm.pool_id, pm.team_id
+    LEFT JOIN pool_game_participants g ON g.pool_id=pm.pool_id
+      AND (g.team_a_id=pm.team_id OR g.team_b_id=pm.team_id)
+    GROUP BY pm.pool_id, pm.team_id, pm.position
 ), ranked AS (
-    SELECT *, goals_for-goals_against AS goal_differential,
-      RANK() OVER (PARTITION BY pool_id ORDER BY wins DESC, (goals_for-goals_against) DESC, goals_for DESC) AS final_rank
-    FROM pool_results
+    SELECT pr.*, goals_for-goals_against AS goal_differential,
+      ROW_NUMBER() OVER (PARTITION BY pool_id
+        ORDER BY wins DESC, losses ASC, (goals_for-goals_against) DESC, position ASC) AS final_rank
+    FROM pool_results pr
+    WHERE pr.team_id IS NOT NULL
 )
 SELECT pm.pool_id, pm.position, pm.team_id, t.name AS team_name, pm.division_id,
-       r.wins, r.losses, r.goals_for, r.goals_against, r.goal_differential,
-       CASE WHEN pm.team_id IS NULL THEN NULL ELSE r.final_rank END AS final_rank
+       COALESCE(r.wins,0) AS wins, COALESCE(r.losses,0) AS losses,
+       COALESCE(r.goals_for,0) AS goals_for, COALESCE(r.goals_against,0) AS goals_against,
+       COALESCE(r.goal_differential,0) AS goal_differential,
+       CASE WHEN pm.team_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM games g WHERE g.pool_id=pm.pool_id AND g.stage='Pool')
+              AND NOT EXISTS (
+                SELECT 1 FROM games g
+                WHERE g.pool_id=pm.pool_id AND g.stage='Pool'
+                  AND (g.status!='Final' OR g.score_a IS NULL OR g.score_b IS NULL)
+              )
+            THEN r.final_rank END AS final_rank
 FROM pool_members pm LEFT JOIN teams t ON t.team_id=pm.team_id
-JOIN ranked r ON r.pool_id=pm.pool_id AND r.team_id IS pm.team_id;
+LEFT JOIN ranked r ON r.pool_id=pm.pool_id AND r.team_id=pm.team_id;
 
 CREATE VIEW IF NOT EXISTS games_vw AS
 WITH RECURSIVE resolved(game_id, side, team_id) AS (
