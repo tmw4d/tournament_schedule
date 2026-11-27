@@ -6,6 +6,7 @@ import streamlit as st
 import altair as alt
 
 import database
+import s3_backup
 
 
 def _connection():
@@ -259,31 +260,78 @@ def _render_teams(conn, division_labels):
         },
         alt=f"Teams in {division_labels[division_id]}")
     if st.button("Save teams", key=f"save_teams_{division_id}", type="primary"):
-        changes=st.session_state[f"teams_editor_{division_id}"]
         try:
             with conn:
-                for idx,updates in changes.get("edited_rows",{}).items():
-                    team_id=frame.iloc[int(idx)]["team_id"]
-                    assignments=", ".join(f"{column}=?" for column in updates)
-                    values=[None if pd.isna(value) or (col=="payment_channel" and value=="—") else value for col,value in updates.items()]
-                    conn.execute(f"UPDATE teams SET {assignments} WHERE team_id=? AND division_id=?",[*values,team_id,division_id])
-                for idx in changes.get("deleted_rows",[]):
-                    team_id=frame.iloc[int(idx)]["team_id"]
-                    conn.execute("UPDATE pool_members SET team_id=NULL WHERE team_id=?",(team_id,))
-                    conn.execute("DELETE FROM teams WHERE team_id=? AND division_id=?",(team_id,division_id))
-                for row in changes.get("added_rows",[]):
-                    if row.get("name"):
-                        channel=row.get("payment_channel")
-                        if pd.isna(channel) or channel=="—": channel=None
-                        def clean(value):
-                            return None if pd.isna(value) else value
-                        conn.execute("""INSERT INTO teams
-                            (name,division_id,city,state,payment_received_date,payment_channel,payment_amount,access_pin)
-                            VALUES (?,?,?,?,?,?,?,?)""",
-                            (row["name"],division_id,clean(row.get("city")),clean(row.get("state")),clean(row.get("payment_received_date")),channel,clean(row.get("payment_amount")),clean(row.get("access_pin"))))
+                def database_value(column, value):
+                    if pd.isna(value) or (column == "payment_channel" and value == "—"):
+                        return None
+                    if column == "payment_received_date":
+                        return value.isoformat() if hasattr(value, "isoformat") else value
+                    return value
+
+                def same_value(left, right, column):
+                    left = database_value(column, left)
+                    right = database_value(column, right)
+                    if left is None or right is None:
+                        return left is None and right is None
+                    return left == right
+
+                # Persist the full returned table by stable team_id. Editor change
+                # indexes can become stale when rows are added, removed, or sorted.
+                original_ids = set(frame["team_id"].dropna().astype(int))
+                returned_ids = set()
+                editable_columns = [
+                    "name", "city", "state", "payment_received_date", "payment_channel",
+                    "payment_amount", "access_pin",
+                ]
+                for _, row in edited.iterrows():
+                    team_id = row.get("team_id")
+                    if pd.notna(team_id):
+                        team_id = int(team_id)
+                        returned_ids.add(team_id)
+                        original = frame.loc[frame["team_id"] == team_id].iloc[0]
+                        values = {
+                            column: database_value(column, row[column])
+                            for column in editable_columns
+                            if not same_value(row[column], original[column], column)
+                        }
+                        if values:
+                            assignments = ", ".join(f"{column}=?" for column in values)
+                            cursor = conn.execute(
+                                f"UPDATE teams SET {assignments} WHERE team_id=? AND division_id=?",
+                                [*values.values(), team_id, division_id],
+                            )
+                            if cursor.rowcount != 1:
+                                raise sqlite3.IntegrityError(f"Team {team_id} was not saved.")
+                    elif pd.notna(row.get("name")) and str(row["name"]).strip():
+                        values = {column: database_value(column, row.get(column)) for column in editable_columns}
+                        values["division_id"] = division_id
+                        columns = ", ".join(values)
+                        conn.execute(
+                            f"INSERT INTO teams ({columns}) VALUES ({','.join('?' for _ in values)})",
+                            list(values.values()),
+                        )
+
+                for team_id in original_ids - returned_ids:
+                    conn.execute("UPDATE pool_members SET team_id=NULL WHERE team_id=?", (team_id,))
+                    conn.execute("DELETE FROM teams WHERE team_id=? AND division_id=?", (team_id, division_id))
+
+                # Confirm existing team edits before showing the save as complete.
+                for _, row in edited.iterrows():
+                    team_id = row.get("team_id")
+                    if pd.isna(team_id):
+                        continue
+                    saved = conn.execute(
+                        "SELECT name,city,state,payment_received_date,payment_channel,payment_amount,access_pin "
+                        "FROM teams WHERE team_id=? AND division_id=?",
+                        (int(team_id), division_id),
+                    ).fetchone()
+                    expected = tuple(database_value(column, row[column]) for column in editable_columns)
+                    if saved is None or tuple(saved) != expected:
+                        raise sqlite3.IntegrityError(f"Team {int(team_id)} changes were not persisted.")
             st.success("Teams saved.")
             st.rerun()
-        except sqlite3.Error as error:
+        except (sqlite3.Error, ValueError) as error:
             st.error(f"Could not save teams: {error}")
     team_rows=conn.execute("SELECT team_id,name,city,state FROM teams WHERE division_id=? ORDER BY name",(division_id,)).fetchall()
     if team_rows:
@@ -666,11 +714,59 @@ def _render_schedule_checks(conn):
         st.dataframe(field_frame, hide_index=True, width="stretch", alt="Games assigned to the same field at overlapping times")
 
 
+def _render_s3_backups():
+    st.subheader("S3 database backups")
+    st.write("Create an integrity-checked snapshot of the tournament database and store it as a timestamped S3 object.")
+    try:
+        config = s3_backup.get_config(st.secrets)
+    except s3_backup.S3BackupError as error:
+        st.info(str(error))
+        st.caption("Configure the same AWS access keys, region, and S3_BUCKET used by accounting_app. Optional TOURNAMENT_S3_BACKUP_PREFIX defaults to tournament_schedule/backups/ so these files stay separate from accounting backups.")
+        return
+    except Exception:
+        st.info("Add AWS backup settings to Streamlit secrets to enable S3 backups.")
+        return
+
+    st.write(f"**Bucket:** `{config['bucket']}`  ·  **Prefix:** `{config['prefix']}`")
+    if st.button("Back up database to S3", key="create_s3_tournament_backup", type="primary"):
+        try:
+            key = s3_backup.backup_to_s3(config)
+            st.success(f"Tournament database backup created: `s3://{config['bucket']}/{key}`")
+            st.session_state.pop("tournament_s3_backup_listing", None)
+        except s3_backup.S3BackupError as error:
+            st.error(str(error))
+
+    if st.button("Show recent backups", key="refresh_s3_tournament_backups"):
+        try:
+            st.session_state["tournament_s3_backup_listing"] = s3_backup.list_backups(config)
+            st.session_state.pop("tournament_s3_backup_listing_error", None)
+        except s3_backup.S3BackupError as error:
+            st.session_state["tournament_s3_backup_listing_error"] = str(error)
+
+    if error := st.session_state.get("tournament_s3_backup_listing_error"):
+        st.error(error)
+    backup_rows = st.session_state.get("tournament_s3_backup_listing")
+    if backup_rows is not None:
+        if backup_rows:
+            st.dataframe(
+                pd.DataFrame([{
+                    "Backup": item["Key"].rsplit("/", 1)[-1],
+                    "Last modified (UTC)": item.get("LastModified"),
+                    "Size (bytes)": item.get("Size"),
+                } for item in backup_rows]),
+                hide_index=True,
+                width="stretch",
+                alt="Recent tournament database backups in S3",
+            )
+        else:
+            st.info("No tournament backups were found at this S3 prefix.")
+
+
 def render_admin_dashboard():
     database.init_db()
     st.title("Tournament data manager")
     st.caption("IDs remain internal. Edit tournament facts here; calculated standings and resolved game details are read-only views.")
-    tabs = st.tabs(["Divisions", "Pools", "Teams", "Pool members", "Games", "Schedule checks", "Venues", "Calculated views"])
+    tabs = st.tabs(["Divisions", "Pools", "Teams", "Pool members", "Games", "Schedule checks", "Venues", "Calculated views", "S3 backups"])
     with closing(_connection()) as conn:
         division_rows = conn.execute("SELECT division_id,name,tournament FROM divisions ORDER BY name").fetchall()
         division_labels = {r[0]: f"{r[1]} · {r[2]}" for r in division_rows}
@@ -727,3 +823,5 @@ def render_admin_dashboard():
                 LEFT JOIN teams l ON l.team_id=g.loser_team_id
                 WHERE g.division_id=?
                 ORDER BY d.name,g.game_code""", conn, params=(calculated_division,)), hide_index=True, width="stretch", alt=f"Resolved games for {division_labels[calculated_division]}")
+        with tabs[8]:
+            _render_s3_backups()
