@@ -714,7 +714,7 @@ def _render_schedule_checks(conn):
         st.dataframe(field_frame, hide_index=True, width="stretch", alt="Games assigned to the same field at overlapping times")
 
 
-def _render_s3_backups():
+def _render_s3_backups(conn):
     st.subheader("S3 database backups")
     st.write("Create an integrity-checked snapshot of the tournament database and store it as a timestamped S3 object.")
     try:
@@ -758,13 +758,45 @@ def _render_s3_backups():
                 width="stretch",
                 alt="Recent tournament database backups in S3",
             )
+
+            backup_keys = [item["Key"] for item in backup_rows]
+            selected_key = st.selectbox(
+                "Backup to restore",
+                backup_keys,
+                format_func=lambda key: key.rsplit("/", 1)[-1],
+                key="selected_tournament_s3_restore_key",
+            )
+            confirmed = st.checkbox(
+                "I understand this replaces the current tournament database.",
+                key="confirm_tournament_s3_restore",
+            )
+            if st.button("Restore selected backup", key="restore_tournament_s3_backup", disabled=not confirmed):
+                try:
+                    local_backup = s3_backup.restore_from_s3(config, selected_key, conn)
+                    st.session_state["restored_tournament_backup_message"] = (
+                        selected_key.rsplit("/", 1)[-1], str(local_backup)
+                    )
+                    st.session_state["clear_admin_editor_state"] = True
+                    st.session_state.pop("tournament_s3_backup_listing", None)
+                    st.rerun()
+                except (s3_backup.S3BackupError, sqlite3.Error, OSError) as error:
+                    st.error(f"Could not restore backup: {error}")
         else:
             st.info("No tournament backups were found at this S3 prefix.")
 
 
 def render_admin_dashboard():
     database.init_db()
+    if st.session_state.pop("clear_admin_editor_state", False):
+        for key in list(st.session_state):
+            if key.startswith(("edit_", "teams_editor_", "games_editor_", "pool_slot_editor_")):
+                del st.session_state[key]
+        st.session_state.pop("selected_tournament_s3_restore_key", None)
+        st.session_state.pop("confirm_tournament_s3_restore", None)
+    restored_message = st.session_state.pop("restored_tournament_backup_message", None)
     st.title("Tournament data manager")
+    if restored_message:
+        st.success(f"Restored `{restored_message[0]}`. A local pre-restore backup was saved at `{restored_message[1]}`.")
     st.caption("IDs remain internal. Edit tournament facts here; calculated standings and resolved game details are read-only views.")
     tabs = st.tabs(["Divisions", "Pools", "Teams", "Pool members", "Games", "Schedule checks", "Venues", "Calculated views", "S3 backups"])
     with closing(_connection()) as conn:
@@ -824,4 +856,4 @@ def render_admin_dashboard():
                 WHERE g.division_id=?
                 ORDER BY d.name,g.game_code""", conn, params=(calculated_division,)), hide_index=True, width="stretch", alt=f"Resolved games for {division_labels[calculated_division]}")
         with tabs[8]:
-            _render_s3_backups()
+            _render_s3_backups(conn)

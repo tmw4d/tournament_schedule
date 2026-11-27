@@ -7,6 +7,8 @@ import tempfile
 
 import database
 
+LOCAL_BACKUP_DIR = database.BASE_DIR / "data" / "backups"
+
 
 class S3BackupError(Exception):
     """Raised when backup configuration or upload fails."""
@@ -90,3 +92,51 @@ def backup_to_s3(config):
     finally:
         snapshot_path.unlink(missing_ok=True)
     return key
+
+
+def restore_from_s3(config, key, destination_connection):
+    """Restore a listed backup, retaining a local snapshot for recovery."""
+    prefix = config["prefix"].strip("/")
+    allowed_prefix = f"{prefix}/" if prefix else ""
+    if not key.startswith(allowed_prefix) or not key.lower().endswith(".db"):
+        raise S3BackupError("Select a tournament database backup from the configured backup prefix.")
+
+    LOCAL_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    local_backup_path = LOCAL_BACKUP_DIR / f"tournament-before-restore-{_timestamp()}.db"
+    with closing(sqlite3.connect(local_backup_path)) as local_backup:
+        destination_connection.backup(local_backup)
+        result = local_backup.execute("PRAGMA integrity_check").fetchone()
+    if not result or result[0] != "ok":
+        local_backup_path.unlink(missing_ok=True)
+        raise S3BackupError("Could not create a valid local backup before restore.")
+
+    handle = tempfile.NamedTemporaryFile(prefix="tournament-restore-", suffix=".db", delete=False)
+    downloaded_path = Path(handle.name)
+    handle.close()
+    try:
+        try:
+            _s3_client(config).download_file(config["bucket"], key, str(downloaded_path))
+        except Exception as exc:
+            raise S3BackupError(f"Could not download the selected S3 backup: {exc}") from exc
+
+        with closing(sqlite3.connect(downloaded_path)) as downloaded:
+            result = downloaded.execute("PRAGMA integrity_check").fetchone()
+        if not result or result[0] != "ok":
+            raise S3BackupError("The selected S3 backup failed its SQLite integrity check. Current data was not changed.")
+
+        try:
+            with closing(sqlite3.connect(downloaded_path)) as downloaded:
+                downloaded.backup(destination_connection)
+            integrity = destination_connection.execute("PRAGMA integrity_check").fetchone()
+            foreign_key_issues = destination_connection.execute("PRAGMA foreign_key_check").fetchall()
+            if not integrity or integrity[0] != "ok" or foreign_key_issues:
+                raise S3BackupError("Restored database validation failed.")
+        except Exception as exc:
+            with closing(sqlite3.connect(local_backup_path)) as local_backup:
+                local_backup.backup(destination_connection)
+            if isinstance(exc, S3BackupError):
+                raise S3BackupError(f"Restore was rolled back to the local backup: {exc}") from exc
+            raise S3BackupError(f"Restore failed and was rolled back to the local backup: {exc}") from exc
+        return local_backup_path
+    finally:
+        downloaded_path.unlink(missing_ok=True)
