@@ -6,7 +6,7 @@ import yaml
 import preferences
 import database
 import tournament_auth
-import s3_backup
+import tournament_s3
 
 
 st.set_page_config(
@@ -38,7 +38,7 @@ config = load_config()
 
 @st.cache_resource(show_spinner="Loading tournament database")
 def initialize_tournament_database():
-    return s3_backup.initialize_primary_database(st.secrets)
+    return tournament_s3.initialize_primary_database(st.secrets)
 
 
 database_storage_status = initialize_tournament_database()

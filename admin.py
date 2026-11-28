@@ -6,7 +6,7 @@ import streamlit as st
 import altair as alt
 
 import database
-import s3_backup
+import tournament_s3 as s3_backup
 
 
 def _connection():
