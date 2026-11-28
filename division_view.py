@@ -5,10 +5,12 @@ from contextlib import closing
 import pandas as pd
 import streamlit as st
 
+import database
+
 
 def _load_matches(division_name, favorite_team=None):
     try:
-        with closing(sqlite3.connect("tournament.db")) as conn:
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             games = conn.execute("""
                 SELECT g.game_code,g.stage,g.round_name,p.name pool_name,
@@ -96,7 +98,7 @@ def _render_games(matches, stage, division_name):
 
 
 def _render_pool_tables(division_name, favorite_team=None):
-    with closing(sqlite3.connect("tournament.db")) as conn:
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
         standings = pd.read_sql_query("""
             SELECT p.name AS pool, v.position, v.team_name AS team,
                    v.wins, v.losses, v.goal_differential, v.final_rank
@@ -125,7 +127,7 @@ def _render_pool_tables(division_name, favorite_team=None):
                         for row, is_favorite in zip(rows.itertuples(), favorite_rows)
                     ],
                     "Record (W–L, GD)": [f"{row.wins}–{row.losses} ({row.goal_differential:+d})" for row in rows.itertuples()],
-                    "Pool rank": [row.final_rank if pd.notna(row.final_rank) else "—" for row in rows.itertuples()],
+                    "Pool rank": [int(row.final_rank) if pd.notna(row.final_rank) else "—" for row in rows.itertuples()],
                 })
                 favorite_indices = {index for index, is_favorite in enumerate(favorite_rows) if is_favorite}
 
