@@ -7,5 +7,6 @@ bank_import/
 data/s3_sync_state.json
 data/backups/*
 data/*
+/data/tournament.db
 .python-version
 
