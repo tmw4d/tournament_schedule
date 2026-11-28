@@ -107,7 +107,12 @@ CREATE TABLE IF NOT EXISTS games (
 
 CREATE VIEW IF NOT EXISTS pool_members_vw AS
 WITH pool_game_participants AS (
-    SELECT g.game_id, g.pool_id, g.stage, g.status, g.score_a, g.score_b,
+    SELECT g.game_id,
+           COALESCE(
+             g.pool_id,
+             CASE WHEN g.source_pool_a_id=g.source_pool_b_id THEN g.source_pool_a_id END
+           ) AS pool_id,
+           g.stage, g.status, g.score_a, g.score_b,
            CASE g.source_type_a
              WHEN 'team' THEN g.source_team_a_id
              WHEN 'pool_position' THEN (
