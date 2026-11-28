@@ -2,17 +2,17 @@
 
 import sqlite3
 from contextlib import closing
-from pathlib import Path
 
 import streamlit as st
+import database
 
 
 def _teams_for_division(division_name):
-    if not division_name or not Path("tournament.db").exists():
+    if not division_name or not database.DB_PATH.exists():
         return []
 
     try:
-        with closing(sqlite3.connect("tournament.db")) as conn:
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:
             return conn.execute(
                 """
                 SELECT t.team_id, t.name

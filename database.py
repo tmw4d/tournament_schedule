@@ -4,7 +4,9 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "tournament.db"
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "tournament.db"
+SEED_DB_PATH = BASE_DIR / "tournament.db"
 SCHEMA_PATH = BASE_DIR / "database_setup.sql"
 GAME_MIGRATION_PATH = BASE_DIR / "migrations" / "002_game_side_sources.sql"
 DERIVED_MODEL_MIGRATION_PATH = BASE_DIR / "migrations" / "003_derived_game_and_pool_views.sql"
@@ -16,6 +18,7 @@ DIVISION_SCHEDULE_MIGRATION_PATH = BASE_DIR / "migrations" / "007_division_sched
 
 def init_db():
     """Create the current schema and migrate legacy pool and match fields."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(DB_PATH)) as conn, conn:
         conn.execute("PRAGMA foreign_keys = ON")
         tables = {row[0] for row in conn.execute(

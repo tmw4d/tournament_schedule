@@ -715,19 +715,62 @@ def _render_schedule_checks(conn):
 
 
 def _render_s3_backups(conn):
-    st.subheader("S3 database backups")
-    st.write("Create an integrity-checked snapshot of the tournament database and store it as a timestamped S3 object.")
+    st.subheader("Persistent tournament database")
+    st.write("The primary database lives in this app's runtime storage and loads from S3 when the app starts.")
     try:
         config = s3_backup.get_config(st.secrets)
     except s3_backup.S3BackupError as error:
         st.info(str(error))
-        st.caption("Configure the same AWS access keys, region, and S3_BUCKET used by accounting_app. Optional TOURNAMENT_S3_BACKUP_PREFIX defaults to tournament_schedule/backups/ so these files stay separate from accounting backups.")
+        st.caption("Configure the same AWS access keys, region, and S3_BUCKET used by accounting_app. Set TOURNAMENT_S3_DB_KEY to a separate object such as tournament_schedule/tournament.db. Backups use TOURNAMENT_S3_BACKUP_PREFIX.")
         return
     except Exception:
         st.info("Add AWS backup settings to Streamlit secrets to enable S3 backups.")
         return
 
-    st.write(f"**Bucket:** `{config['bucket']}`  ·  **Prefix:** `{config['prefix']}`")
+    st.write(f"**Primary database:** `s3://{config['bucket']}/{config['db_key']}`")
+    status = st.session_state.get("database_storage_status", {})
+    if status.get("source") == "s3":
+        st.info("This runtime loaded the primary database from S3. Save changes to S3 before a runtime restart to keep them.")
+    else:
+        st.warning(status.get("message", "The runtime is using a local database copy. Save it to S3 to keep changes across restarts."))
+
+    if st.button("Save current database to S3", key="upload_tournament_primary_db", type="primary"):
+        try:
+            previous_backup = s3_backup.upload_primary_database(config)
+            st.session_state["database_storage_status"] = {
+                "source": "s3",
+                "remote_exists": True,
+                "message": f"Saved the current database to s3://{config['bucket']}/{config['db_key']}.",
+            }
+            status = st.session_state["database_storage_status"]
+            message = f"Current tournament database saved to `s3://{config['bucket']}/{config['db_key']}`."
+            if previous_backup:
+                message += f" Previous S3 database backed up to `{previous_backup}`."
+            st.success(message)
+        except s3_backup.S3BackupError as error:
+            st.error(str(error))
+
+    primary_exists = status.get("remote_exists")
+    if primary_exists:
+        restore_primary_confirmed = st.checkbox(
+            "I understand loading the S3 primary replaces the current runtime database.",
+            key="confirm_tournament_primary_restore",
+        )
+        if st.button("Reload primary database from S3", key="reload_tournament_primary_db", disabled=not restore_primary_confirmed):
+            try:
+                local_backup = s3_backup.restore_from_s3(config, config["db_key"], conn)
+                st.session_state["restored_tournament_backup_message"] = (
+                    config["db_key"].rsplit("/", 1)[-1], str(local_backup)
+                )
+                st.session_state["clear_admin_editor_state"] = True
+                st.rerun()
+            except (s3_backup.S3BackupError, sqlite3.Error, OSError) as error:
+                st.error(f"Could not reload primary database: {error}")
+
+    st.divider()
+    st.subheader("S3 backups")
+    st.write("Create an integrity-checked timestamped backup before major edits or as an additional restore point.")
+    st.write(f"**Backup prefix:** `{config['prefix']}`")
     if st.button("Back up database to S3", key="create_s3_tournament_backup", type="primary"):
         try:
             key = s3_backup.backup_to_s3(config)
